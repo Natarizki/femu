@@ -32,6 +32,10 @@ FEMUArch femu_arch_from_string(const char *name) {
         strcmp(name, "rv32")    == 0) return ARCH_RISCV32;
     if (strcmp(name, "riscv64") == 0 ||
         strcmp(name, "rv64")    == 0) return ARCH_RISCV64;
+    /* gencode-style aliases */
+    if (strcmp(name, "risc-v")  == 0 ||
+        strcmp(name, "riscv")   == 0) return ARCH_RISCV64;
+    if (strcmp(name, "x86-64")  == 0) return ARCH_X86_64;
     return ARCH_NONE;
 }
 

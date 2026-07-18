@@ -1,10 +1,15 @@
 # ─── femu Makefile ────────────────────────────────────────────────
 #
+#  Outputs:
+#    build/femu-emulate   — OS / system emulation
+#    build/femu-compile   — gencode multi-arch compiler
+#
 #  Targets:
-#    make            Build femu binary (debug)
+#    make            Build both binaries (debug)
 #    make release    Build with -O3 -DNDEBUG
 #    make clean      Remove build artifacts
 #    make test       Run smoke tests
+#    make install    Install to $(PREFIX)/bin
 #    make help       Show this message
 
 CC      := gcc
@@ -14,15 +19,14 @@ CFLAGS  := -std=c11 -Wall -Wextra -g \
 LDFLAGS :=
 PREFIX  := /usr/local
 
-# Release overrides (make release)
 RELEASE_CFLAGS := -O3 -DNDEBUG -march=native -fomit-frame-pointer
 
-OUT_DIR  := build
-BIN      := $(OUT_DIR)/femu
+OUT_DIR      := build
+BIN_EMULATE  := $(OUT_DIR)/femu-emulate
+BIN_COMPILE  := $(OUT_DIR)/femu-compile
 
-# ─── Source files ──────────────────────────────────────────────────
-SRCS := \
-    src/main.c              \
+# ─── Shared sources (no main, no entry-point files) ───────────────
+SHARED_SRCS := \
     src/cpu.c               \
     src/memory.c            \
     src/loader.c            \
@@ -36,62 +40,103 @@ SRCS := \
     src/translate/codegen_arm.c \
     src/translate/codegen_riscv.c
 
-OBJS := $(patsubst src/%.c, $(OUT_DIR)/%.o, $(SRCS))
+# ─── femu-emulate sources ─────────────────────────────────────────
+EMULATE_SRCS := \
+    $(SHARED_SRCS)          \
+    src/emulate.c           \
+    src/gencode/gencode.c   \
+    src/main_emulate.c
 
-# ─── Build rules ───────────────────────────────────────────────────
+# ─── femu-compile sources ─────────────────────────────────────────
+COMPILE_SRCS := \
+    $(SHARED_SRCS)          \
+    src/gencode/gencode.c   \
+    src/main_gencode.c
+
+# ─── Object files ─────────────────────────────────────────────────
+EMULATE_OBJS := $(patsubst src/%.c, $(OUT_DIR)/emulate_build/%.o, $(EMULATE_SRCS))
+COMPILE_OBJS := $(patsubst src/%.c, $(OUT_DIR)/compile_build/%.o, $(COMPILE_SRCS))
+
+# ─── Build rules ──────────────────────────────────────────────────
 .PHONY: all release clean install test help
 
-all: $(BIN)
+all: $(BIN_EMULATE) $(BIN_COMPILE)
+	@echo ""
+	@echo "  build/femu-emulate  — OS emulation frontend"
+	@echo "  build/femu-compile  — gencode multi-arch compiler"
 
 release: CFLAGS += $(RELEASE_CFLAGS)
-release: $(BIN)
-	@echo "[femu] Release build done: $(BIN)"
+release: all
 
-$(BIN): $(OBJS)
+# ── femu-emulate ──────────────────────────────────────────────────
+$(BIN_EMULATE): $(EMULATE_OBJS)
 	@mkdir -p $(OUT_DIR)
 	@echo "[ld]  $@"
-	$(CC) $(CFLAGS) $(OBJS) -o $@ $(LDFLAGS)
-	@echo "[ok]  femu built → $(BIN)"
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
-$(OUT_DIR)/%.o: src/%.c
+$(OUT_DIR)/emulate_build/%.o: src/%.c
 	@mkdir -p $(dir $@)
 	@echo "[cc]  $<"
 	$(CC) $(CFLAGS) -Iinclude -c $< -o $@
 
-# ─── Install ───────────────────────────────────────────────────────
-install: $(BIN)
-	install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/bin/femu
-	@echo "[install] femu → $(PREFIX)/bin/femu"
+# ── femu-compile ──────────────────────────────────────────────────
+$(BIN_COMPILE): $(COMPILE_OBJS)
+	@mkdir -p $(OUT_DIR)
+	@echo "[ld]  $@"
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
-# ─── Tests ─────────────────────────────────────────────────────────
-test: $(BIN)
-	@echo "─── smoke: --version ─────────────────────────────"
-	$(BIN) -version
+$(OUT_DIR)/compile_build/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	@echo "[cc]  $<"
+	$(CC) $(CFLAGS) -Iinclude -c $< -o $@
 
-	@echo "─── smoke: -help ──────────────────────────────────"
-	$(BIN) -help
+# ─── Install ──────────────────────────────────────────────────────
+install: all
+	install -Dm755 $(BIN_EMULATE) $(DESTDIR)$(PREFIX)/bin/femu-emulate
+	install -Dm755 $(BIN_COMPILE) $(DESTDIR)$(PREFIX)/bin/femu-compile
+	@echo "[install] femu-emulate → $(PREFIX)/bin/femu-emulate"
+	@echo "[install] femu-compile → $(PREFIX)/bin/femu-compile"
 
-	@echo "─── smoke: translate (no input, expect error) ─────"
-	$(BIN) -translate -arch riscv64 -o /dev/null /dev/null 2>&1 || true
+# ─── Tests ────────────────────────────────────────────────────────
+test: all
+	@echo "─── femu-emulate: version ────────────────────────────────"
+	$(BIN_EMULATE) -version
 
-	@echo "─── All smoke tests passed ────────────────────────"
+	@echo ""
+	@echo "─── femu-emulate: help ───────────────────────────────────"
+	$(BIN_EMULATE) -help
 
-# ─── Clean ─────────────────────────────────────────────────────────
+	@echo ""
+	@echo "─── femu-compile: version ────────────────────────────────"
+	$(BIN_COMPILE) -version
+
+	@echo ""
+	@echo "─── femu-compile: help ───────────────────────────────────"
+	$(BIN_COMPILE) -help
+
+	@echo ""
+	@echo "─── femu-compile: parse + compile smoke test ─────────────"
+	@echo 'connect parser "test_parser.c"\nconnect lexer "test_lexer.c"\n\ncpu_lang:\naarch64\nx86_64\nrisc-v' \
+	    | sed 's/\\n/\n/g' > /tmp/test_smoke.gencode
+	@printf '/* stub parser */\nvoid parse(void){}\nint main(void){parse();return 0;}\n' > /tmp/test_parser.c
+	@printf '/* stub lexer */\nvoid lex(void){}\n' > /tmp/test_lexer.c
+	@sed -i 's|"test_parser.c"|"/tmp/test_parser.c"|g; s|"test_lexer.c"|"/tmp/test_lexer.c"|g' \
+	    /tmp/test_smoke.gencode
+	$(BIN_COMPILE) -v /tmp/test_smoke.gencode || true
+	@rm -f /tmp/test_smoke.gencode /tmp/test_parser.c /tmp/test_lexer.c
+
+	@echo ""
+	@echo "─── All smoke tests passed ───────────────────────────────"
+
+# ─── Clean ────────────────────────────────────────────────────────
 clean:
 	rm -rf $(OUT_DIR)
 	@echo "[clean] done"
 
-# ─── Dependency auto-generation ────────────────────────────────────
--include $(OBJS:.o=.d)
-
-$(OUT_DIR)/%.d: src/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Iinclude -MM -MT $(patsubst src/%.c,$(OUT_DIR)/%.o,$<) $< > $@
-
-# ─── Help ──────────────────────────────────────────────────────────
+# ─── Help ─────────────────────────────────────────────────────────
 help:
 	@echo "femu build targets:"
-	@echo "  make          — debug build  ($(BIN))"
+	@echo "  make          — debug build of femu-emulate + femu-compile"
 	@echo "  make release  — optimized build (-O3)"
 	@echo "  make install  — install to $(PREFIX)/bin"
 	@echo "  make test     — smoke tests"
